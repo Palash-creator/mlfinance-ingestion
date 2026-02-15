@@ -12,7 +12,7 @@ Production-grade Python ingestion pipeline for quant finance time series.
 
 ## Install
 ```bash
-pip install pandas pyarrow yfinance fredapi pytest
+pip install pandas pyarrow yfinance fredapi pytest streamlit
 ```
 
 ## Configure
@@ -29,6 +29,11 @@ export FRED_API_KEY="your_real_fred_key"
 ## Run
 ```bash
 python -m risk_lab.run_ingest --start 2005-01-01 --end 2026-02-14
+```
+
+## Streamlit Frontend
+```bash
+streamlit run streamlit_app.py
 ```
 
 ## Test

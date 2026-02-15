@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +22,15 @@ from risk_lab.storage.parquet_store import (
 from risk_lab.utils.dates import normalize_to_utc_date_index, parse_date
 from risk_lab.utils.logging import setup_logger
 from risk_lab.validation.checks import ValidationReport, validate_dataset
+
+
+@dataclass(frozen=True)
+class IngestionRunResult:
+    success: bool
+    exit_code: int
+    run_id: str
+    report: ValidationReport
+    write_paths: dict[str, Any]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,27 +77,26 @@ def _print_summary(
             print(f"  - {warn}")
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
+def run_ingestion(start_text: str, end_text: str) -> IngestionRunResult:
     run_id = str(uuid.uuid4())
     logger = setup_logger(run_id=run_id, log_dir=CONFIG.log_dir)
 
     try:
-        start = parse_date(args.start)
-        end = parse_date(args.end)
+        start = parse_date(start_text)
+        end = parse_date(end_text)
     except ValueError as exc:
-        print(f"❌ FAILURE\nInvalid date format: {exc}")
-        return 2
+        report = ValidationReport(errors=[f"Invalid date format: {exc}"], warnings=[], metrics={"missing_pct": {}, "stale_series": []})
+        return IngestionRunResult(False, 2, run_id, report, {"log": str(CONFIG.log_dir / f"{run_id}.log")})
 
     if start > end:
-        print("❌ FAILURE\n--start must be <= --end")
-        return 2
+        report = ValidationReport(errors=["--start must be <= --end"], warnings=[], metrics={"missing_pct": {}, "stale_series": []})
+        return IngestionRunResult(False, 2, run_id, report, {"log": str(CONFIG.log_dir / f"{run_id}.log")})
 
-    logger.info("Starting ingestion run_id=%s start=%s end=%s", run_id, args.start, args.end)
+    logger.info("Starting ingestion run_id=%s start=%s end=%s", run_id, start_text, end_text)
 
     if not CONFIG.fred_api_key:
-        print("❌ FAILURE\nFRED_API_KEY is required in config.py or environment.")
-        return 2
+        report = ValidationReport(errors=["FRED_API_KEY is required in config.py or environment."], warnings=[], metrics={"missing_pct": {}, "stale_series": []})
+        return IngestionRunResult(False, 2, run_id, report, {"log": str(CONFIG.log_dir / f"{run_id}.log")})
 
     try:
         fred_res = load_fred_series(CONFIG.fred_series, start=start, end=end, api_key=CONFIG.fred_api_key)
@@ -132,7 +140,7 @@ def main() -> int:
         catalog_entry = {
             "run_id": run_id,
             "run_timestamp": iso_now(),
-            "date_range": {"start": args.start, "end": args.end},
+            "date_range": {"start": start_text, "end": end_text},
             "sources_pulled": ["fred", "yfinance"],
             "datasets": {
                 "raw_fred": serialize_write_results(fred_raw_paths),
@@ -163,14 +171,19 @@ def main() -> int:
             "log": str(CONFIG.log_dir / f"{run_id}.log"),
         }
         success = report.is_success()
-        _print_summary(success, report, write_paths)
-        return 0 if success else 1
+        return IngestionRunResult(success, 0 if success else 1, run_id, report, write_paths)
 
     except Exception as exc:  # fail-safe at CLI boundary
         logger.exception("Ingestion failed: %s", exc)
         fail_report = ValidationReport(errors=[str(exc)], warnings=[], metrics={"missing_pct": {}, "stale_series": []})
-        _print_summary(False, fail_report, {"log": str(CONFIG.log_dir / f"{run_id}.log")})
-        return 1
+        return IngestionRunResult(False, 1, run_id, fail_report, {"log": str(CONFIG.log_dir / f"{run_id}.log")})
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    result = run_ingestion(args.start, args.end)
+    _print_summary(result.success, result.report, result.write_paths)
+    return result.exit_code
 
 
 if __name__ == "__main__":
